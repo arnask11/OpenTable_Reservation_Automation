@@ -1,0 +1,23 @@
+{
+  "name": "opentable-reservation-agent",
+  "version": "0.1.0",
+  "description": "Cloud-browser automation service that checks OpenTable availability and books reservations.",
+  "type": "module",
+  "main": "src/index.js",
+  "scripts": {
+    "dev": "node src/server.js",
+    "start": "node src/server.js",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@browserbasehq/sdk": "^2.5.0",
+    "dotenv": "^16.4.5",
+    "express": "^5.2.1",
+    "playwright-core": "^1.48.0",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "playwright": "^1.61.1",
+    "vitest": "^4.1.10"
+  }
+}

@@ -9,7 +9,8 @@ Books an OpenTable table for you by driving a cloud browser ([Browserbase](https
 3. Checks availability → picks seating → fills your details → clicks **Complete reservation**
 4. Returns the confirmation number
 
-Takes about **30–90 seconds**. Sometimes longer if OpenTable blocks the session — just retry.
+**Cold one-shot:** ~40–50s (sometimes longer if OpenTable blocks — just retry).  
+**Live call (warmed):** start a session early, then confirm in ~15–25s.
 
 ## What you need
 
@@ -25,18 +26,50 @@ npm install
 cp .env.example .env   # fill in Browserbase credentials
 ```
 
-## Book a table
+## Live-call flow (fast confirm)
+
+Warm the browser while you’re talking, then book when the customer confirms:
 
 ```sh
-# 1. Start the server
 npm run dev
 
-# 2. Optional — check available times
+# 1) Start of call — warm OpenTable (~10–20s, do this early)
+curl -X POST http://localhost:3000/sessions/warm
+# → { "success": true, "sessionId": "..." }
+
+# 2) During call — check times (reuse sessionId)
+curl -X POST http://localhost:3000/availability \
+  -H "Content-Type: application/json" \
+  -d '{"rid":24886,"date":"2026-07-20","time":"19:00","partySize":2,"sessionId":"YOUR_SESSION_ID"}'
+
+# 3) Customer says yes — book (same sessionId; ~15–25s)
+curl -X POST http://localhost:3000/reservations \
+  -H "Content-Type: application/json" \
+  -d '{
+    "rid": 24886,
+    "date": "2026-07-20",
+    "time": "19:00",
+    "partySize": 2,
+    "firstName": "Your",
+    "lastName": "Name",
+    "phone": "4155551234",
+    "email": "you@example.com",
+    "sessionId": "YOUR_SESSION_ID",
+    "dryRun": false
+  }'
+```
+
+Warm sessions expire after ~6 minutes. After a book attempt the session is closed — warm again for the next booking. Omit `sessionId` for a cold one-shot (slower).
+
+## Book a table (cold one-shot)
+
+```sh
+npm run dev
+
 curl -X POST http://localhost:3000/availability \
   -H "Content-Type: application/json" \
   -d '{"rid":24886,"date":"2026-07-20","time":"19:00","partySize":2}'
 
-# 3. Book (dryRun: false = real reservation)
 curl -X POST http://localhost:3000/reservations \
   -H "Content-Type: application/json" \
   -d '{

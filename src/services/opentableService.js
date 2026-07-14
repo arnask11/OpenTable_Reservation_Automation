@@ -1,4 +1,5 @@
 import { createBrowserSession } from './browserbaseService.js';
+import { putSession, acquireSession, unlockSession, releaseSession } from './sessionStore.js';
 import { buildOpenTableBookingUrl } from '../utils/urlBuilder.js';
 import { to12Hour, to24Hour } from '../utils/timeUtils.js';
 import { selectors, TIME_SLOT_TEXT_PATTERN } from '../utils/selectors.js';
@@ -11,23 +12,31 @@ const DAPI_PREFIX = '/dapi/';
 // ─── Page parsing ────────────────────────────────────────────────────────────
 
 export async function parseTimeSlots(page) {
-  const buttons = await page.locator('button').all();
-  const seen = new Set();
-  const times = [];
+  const patternSource = TIME_SLOT_TEXT_PATTERN.source;
+  const patternFlags = TIME_SLOT_TEXT_PATTERN.flags;
 
-  for (const button of buttons) {
-    const text = (await button.textContent().catch(() => ''))?.trim() ?? '';
-    const match = TIME_SLOT_TEXT_PATTERN.exec(text);
-    if (!match) continue;
+  return page.evaluate(
+    ({ source, flags }) => {
+      const pattern = new RegExp(source, flags);
+      const seen = new Set();
+      const times = [];
 
-    const time12 = match[1].toUpperCase().replace(/\s+/, ' ');
-    if (!seen.has(time12)) {
-      seen.add(time12);
-      times.push(time12);
-    }
-  }
+      for (const button of document.querySelectorAll('button')) {
+        const text = (button.textContent || '').trim();
+        const match = pattern.exec(text);
+        if (!match) continue;
 
-  return times;
+        const time12 = match[1].toUpperCase().replace(/\s+/, ' ');
+        if (!seen.has(time12)) {
+          seen.add(time12);
+          times.push(time12);
+        }
+      }
+
+      return times;
+    },
+    { source: patternSource, flags: patternFlags }
+  );
 }
 
 export async function waitForTimeSlots(page, maxWaitMs = 12000) {
@@ -36,11 +45,11 @@ export async function waitForTimeSlots(page, maxWaitMs = 12000) {
   while (Date.now() - start < maxWaitMs) {
     const slots = await parseTimeSlots(page);
     if (slots.length > 0) {
-      // Slots often render in batches; give the rest a moment to appear before returning.
-      await page.waitForTimeout(1500);
+      // Slots often render in batches; brief pause for stragglers.
+      await page.waitForTimeout(300);
       return parseTimeSlots(page);
     }
-    await page.waitForTimeout(500);
+    await page.waitForTimeout(250);
   }
 
   return [];
@@ -52,22 +61,25 @@ async function dismissOverlays(page) {
   const accept = page.locator(selectors.cookieAcceptButton).first();
   if ((await accept.count()) > 0) {
     await accept.click().catch(() => {});
-    await page.waitForTimeout(500);
   }
   const close = page.locator(selectors.cookieCloseButton).first();
   if ((await close.count()) > 0) {
     await close.click().catch(() => {});
-    await page.waitForTimeout(300);
   }
 }
 
-async function navigateAndFindTable(page, { rid, date, time, partySize }) {
-  // A cold direct hit to the booking endpoint (no referrer/session) gets blocked by
-  // OpenTable's bot detection. Visiting the homepage first establishes a session that
-  // makes the subsequent booking-page request look like normal browsing.
+async function warmHomepage(page) {
   await page.goto('https://www.opentable.com/', { waitUntil: 'domcontentloaded' });
-  await page.waitForTimeout(3000);
+  await page.waitForTimeout(800);
   await dismissOverlays(page);
+}
+
+async function navigateAndFindTable(page, { rid, date, time, partySize }, { skipHomepageWarmup = false } = {}) {
+  // A cold direct hit to the booking endpoint gets blocked by OpenTable's bot detection.
+  // Homepage first (unless this page was already warmed via /sessions/warm).
+  if (!skipHomepageWarmup) {
+    await warmHomepage(page);
+  }
 
   const url = buildOpenTableBookingUrl({ rid, date, time, partySize });
   await page.goto(url, { waitUntil: 'domcontentloaded' });
@@ -274,7 +286,43 @@ async function submitReservation(page, { partySize, restaurantId, sessionId }) {
   };
 }
 
+async function resolveBrowserSession(sessionId) {
+  if (!sessionId) {
+    const created = await createBrowserSession();
+    return { ...created, reused: false };
+  }
+
+  const entry = acquireSession(sessionId);
+  if (!entry) {
+    throw new Error(`Warm session not found or expired: ${sessionId}`);
+  }
+
+  return {
+    browser: entry.browser,
+    page: entry.page,
+    sessionId,
+    reused: true,
+  };
+}
+
 // ─── Public API ──────────────────────────────────────────────────────────────
+
+/**
+ * Start a Browserbase session and warm OpenTable's homepage.
+ * Use the returned sessionId on /availability and /reservations during a live call.
+ */
+export async function warmSession() {
+  const { browser, page, sessionId } = await createBrowserSession();
+  try {
+    await warmHomepage(page);
+    putSession(sessionId, { browser, page });
+    logger.log('session_warmed', { sessionId });
+    return { success: true, sessionId };
+  } catch (error) {
+    await browser.close().catch(() => {});
+    throw error;
+  }
+}
 
 export async function checkAvailability(params) {
   const { valid, errors, data } = validateAvailabilityInput(params);
@@ -282,15 +330,17 @@ export async function checkAvailability(params) {
     throw new Error(`Invalid availability input: ${errors.join('; ')}`);
   }
 
-  const { rid, date, time, partySize } = data;
+  const { rid, date, time, partySize, sessionId: requestedSessionId } = data;
   let session;
+  let reused = false;
 
   try {
-    session = await createBrowserSession();
+    session = await resolveBrowserSession(requestedSessionId);
+    reused = session.reused;
     const { page, sessionId } = session;
-    logger.log('checking_availability', { rid, date, time, partySize, sessionId });
+    logger.log('checking_availability', { rid, date, time, partySize, sessionId, reused });
 
-    await navigateAndFindTable(page, { rid, date, time, partySize });
+    await navigateAndFindTable(page, { rid, date, time, partySize }, { skipHomepageWarmup: reused });
     const slots12h = await waitForTimeSlots(page);
     const availableTimes = slots12h.map(to24Hour);
 
@@ -312,7 +362,11 @@ export async function checkAvailability(params) {
       sessionId,
     };
   } finally {
-    await session?.browser.close().catch(() => {});
+    if (session?.reused) {
+      unlockSession(session.sessionId);
+    } else if (session?.browser) {
+      await session.browser.close().catch(() => {});
+    }
   }
 }
 
@@ -331,12 +385,15 @@ export async function makeReservation(params) {
     emailMarketingOptIn,
     smsReminderOptIn,
     dryRun,
+    sessionId: requestedSessionId,
   } = data;
 
   let session;
+  let reused = false;
 
   try {
-    session = await createBrowserSession();
+    session = await resolveBrowserSession(requestedSessionId);
+    reused = session.reused;
     const { page, sessionId } = session;
     attachDapiLogger(page, sessionId);
     logger.log('making_reservation', {
@@ -346,11 +403,12 @@ export async function makeReservation(params) {
       partySize,
       dryRun,
       sessionId,
+      reused,
       email: logger.maskEmail(data.email),
       phone: logger.maskPhone(data.phone),
     });
 
-    await navigateAndFindTable(page, { rid, date, time, partySize });
+    await navigateAndFindTable(page, { rid, date, time, partySize }, { skipHomepageWarmup: reused });
 
     const slots12h = await waitForTimeSlots(page);
     const availableTimes = slots12h.map(to24Hour);
@@ -398,6 +456,11 @@ export async function makeReservation(params) {
     logger.logError('make_reservation_error', error, { sessionId: session?.sessionId });
     throw error;
   } finally {
-    await session?.browser.close().catch(() => {});
+    if (reused && session?.sessionId) {
+      // Always release warm sessions after a book attempt (success or failure).
+      await releaseSession(session.sessionId);
+    } else if (session?.browser) {
+      await session.browser.close().catch(() => {});
+    }
   }
 }

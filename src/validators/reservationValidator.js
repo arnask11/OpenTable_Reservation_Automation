@@ -11,6 +11,7 @@ export const availabilitySchema = z.object({
   date: z.string().regex(DATE_PATTERN, 'date must be in YYYY-MM-DD format'),
   time: z.string().regex(TIME_PATTERN, 'time must be in 24-hour HH:MM format'),
   partySize: z.number().int().min(1).max(10),
+  sessionId: z.string().min(1).optional(),
 });
 
 export const reservationSchema = availabilitySchema.extend({

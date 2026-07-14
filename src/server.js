@@ -15,7 +15,9 @@ app.use(reservationRoutes);
 
 app.use((error, req, res, next) => {
   logger.logError('request_failed', error, { path: req.path });
-  const status = /^Invalid (availability|reservation) input/.test(error.message) ? 400 : 500;
+  const status = /^Invalid (availability|reservation) input|^Warm session/.test(error.message)
+    ? 400
+    : 500;
   res.status(status).json({ success: false, error: 'internal_error', message: error.message });
 });
 

@@ -38,6 +38,15 @@ describe('validateAvailabilityInput', () => {
     const result = validateAvailabilityInput({ ...baseAvailability, partySize: 11 });
     expect(result.valid).toBe(false);
   });
+
+  it('accepts an optional sessionId', () => {
+    const result = validateAvailabilityInput({
+      ...baseAvailability,
+      sessionId: 'abc-123',
+    });
+    expect(result.valid).toBe(true);
+    expect(result.data.sessionId).toBe('abc-123');
+  });
 });
 
 describe('validateReservationInput', () => {

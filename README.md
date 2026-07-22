@@ -103,6 +103,23 @@ Use `"dryRun": true` first if you want to test without actually booking.
 
 **Restaurant ID:** Always use the numeric `rid`, not the name/slug.
 
+## Vapi (voice test)
+
+Webhook adapter: `POST /vapi/tools` (does not change the REST endpoints).
+
+1. `npm run dev`
+2. `ngrok http 3000` → copy the public URL
+3. On a **new** Vapi assistant, add custom **Function** tools all pointing at `https://….ngrok…/vapi/tools`:
+   - `warm_session` — no params
+   - `list_restaurants` — no params (returns configured name→rid map)
+   - `check_availability` — `restaurantName` (string) **or** `rid` (number), plus `date`, `time`, `partySize`
+   - `make_reservation` — same + `firstName`, `lastName`, `phone`, `email`
+4. Add restaurants in `src/config/restaurants.js` (OpenTable numeric `rid`). Mirror names in the Vapi system prompt.
+5. Prompt: warm early; pass `restaurantName`; book only after explicit confirm; never invent a rid.
+6. Test with Talk to Assistant / your demo number.
+
+Sessions are keyed by Vapi `call.id`. `make_reservation` stays dry-run unless `VAPI_DRY_RUN=false`.
+
 ## Notes
 
 - OpenTable sometimes still blocks a session — retry if you get a page-load error.

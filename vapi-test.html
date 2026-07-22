@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>OpenTable Test Agent — Voice Test</title>
+  <style>
+    body { font-family: system-ui, sans-serif; padding: 40px; max-width: 520px; }
+    button { padding: 12px 24px; font-size: 16px; margin-right: 8px; cursor: pointer; }
+    #status { margin-top: 16px; color: #333; }
+    .hint { color: #666; font-size: 14px; line-height: 1.4; }
+    code { background: #f2f2f2; padding: 1px 4px; }
+  </style>
+</head>
+<body>
+  <h2>OpenTable Test Agent — Voice Test</h2>
+  <p class="hint">
+    Paste your Vapi <strong>Public</strong> key below (Dashboard → API Keys → Public).
+    Keep <code>npm run dev</code> + ngrok running so tools hit
+    <code>/vapi/tools</code>.
+  </p>
+
+  <label for="publicKey">Public API key</label><br />
+  <input id="publicKey" type="text" style="width:100%;padding:8px;margin:8px 0 16px;"
+    placeholder="YOUR_PUBLIC_KEY_HERE" />
+
+  <button id="startBtn">Start Call</button>
+  <button id="stopBtn">End Call</button>
+  <p id="status">Idle</p>
+
+  <script type="module">
+    import Vapi from 'https://esm.sh/@vapi-ai/web';
+
+    // opentable-test-agent
+    const ASSISTANT_ID = 'da863e9f-31bb-4e4a-99a7-0d9fbe3e01ed';
+
+    const statusEl = document.getElementById('status');
+    const keyInput = document.getElementById('publicKey');
+    let vapi = null;
+
+    function setStatus(text) {
+      statusEl.textContent = text;
+    }
+
+    function getClient() {
+      const key = keyInput.value.trim();
+      if (!key || key === 'YOUR_PUBLIC_KEY_HERE') {
+        throw new Error('Paste your Vapi Public API key first.');
+      }
+      if (!vapi) {
+        vapi = new Vapi(key);
+        vapi.on('call-start', () => setStatus('Call in progress'));
+        vapi.on('call-end', () => setStatus('Call ended'));
+        vapi.on('error', (err) => setStatus(`Error: ${err?.message || err}`));
+      }
+      return vapi;
+    }
+
+    document.getElementById('startBtn').onclick = async () => {
+      try {
+        setStatus('Connecting…');
+        await getClient().start(ASSISTANT_ID);
+      } catch (err) {
+        setStatus(`Error: ${err.message}`);
+      }
+    };
+
+    document.getElementById('stopBtn').onclick = () => {
+      if (vapi) vapi.stop();
+      setStatus('Ended');
+    };
+
+    // Remember key in this browser only (not committed anywhere).
+    const stored = localStorage.getItem('vapiPublicKey');
+    if (stored) keyInput.value = stored;
+    keyInput.addEventListener('change', () => {
+      localStorage.setItem('vapiPublicKey', keyInput.value.trim());
+      vapi = null;
+    });
+  </script>
+</body>
+</html>

@@ -10,16 +10,17 @@ export const availabilitySchema = z.object({
   rid: ridSchema,
   date: z.string().regex(DATE_PATTERN, 'date must be in YYYY-MM-DD format'),
   time: z.string().regex(TIME_PATTERN, 'time must be in 24-hour HH:MM format'),
-  partySize: z.number().int().min(1).max(10),
+  partySize: z.coerce.number().int().min(1).max(10),
   sessionId: z.string().min(1).optional(),
+  callId: z.string().min(1).optional(),
 });
 
 export const reservationSchema = availabilitySchema.extend({
   firstName: z.string().trim().min(1, 'firstName is required'),
   lastName: z.string().trim().min(1, 'lastName is required'),
   phone: z
-    .string()
-    .transform((value) => value.replace(/[\s()-]/g, ''))
+    .union([z.string(), z.number()])
+    .transform((value) => String(value).replace(/[\s()-]/g, ''))
     .pipe(z.string().regex(PHONE_PATTERN, 'phone must be a valid phone number')),
   email: z.string().email('email must be a valid email address'),
   specialRequest: z.string().optional(),

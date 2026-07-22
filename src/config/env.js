@@ -21,4 +21,8 @@ export const env = {
   get nodeEnv() {
     return process.env.NODE_ENV ?? 'development';
   },
+  /** When true (default), Vapi make_reservation never submits a real booking. */
+  get vapiDryRun() {
+    return process.env.VAPI_DRY_RUN !== 'false';
+  },
 };

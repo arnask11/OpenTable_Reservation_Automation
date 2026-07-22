@@ -47,6 +47,17 @@ describe('validateAvailabilityInput', () => {
     expect(result.valid).toBe(true);
     expect(result.data.sessionId).toBe('abc-123');
   });
+
+  it('accepts an optional callId and coerces partySize strings', () => {
+    const result = validateAvailabilityInput({
+      ...baseAvailability,
+      partySize: '2',
+      callId: 'vapi-call-1',
+    });
+    expect(result.valid).toBe(true);
+    expect(result.data.partySize).toBe(2);
+    expect(result.data.callId).toBe('vapi-call-1');
+  });
 });
 
 describe('validateReservationInput', () => {
@@ -68,6 +79,12 @@ describe('validateReservationInput', () => {
   it('rejects an invalid phone number', () => {
     const result = validateReservationInput({ ...baseReservation, phone: 'abc' });
     expect(result.valid).toBe(false);
+  });
+
+  it('accepts a numeric phone from voice tool calls', () => {
+    const result = validateReservationInput({ ...baseReservation, phone: 5551232525 });
+    expect(result.valid).toBe(true);
+    expect(result.data.phone).toBe('5551232525');
   });
 
   it('respects explicit dryRun and opt-in overrides', () => {

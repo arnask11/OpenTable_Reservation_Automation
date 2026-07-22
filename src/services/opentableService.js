@@ -1,5 +1,11 @@
 import { createBrowserSession } from './browserbaseService.js';
-import { putSession, acquireSession, unlockSession, releaseSession } from './sessionStore.js';
+import {
+  putSession,
+  acquireSession,
+  unlockSession,
+  releaseSession,
+  getSessionIdByCallId,
+} from './sessionStore.js';
 import { buildOpenTableBookingUrl } from '../utils/urlBuilder.js';
 import { to12Hour, to24Hour } from '../utils/timeUtils.js';
 import { selectors, TIME_SLOT_TEXT_PATTERN } from '../utils/selectors.js';
@@ -87,9 +93,9 @@ async function navigateAndFindTable(page, { rid, date, time, partySize }, { skip
 
   const findTableButton = page.locator(selectors.findTableButton).first();
   try {
-    await findTableButton.waitFor({ state: 'visible', timeout: 20000 });
+    await findTableButton.waitFor({ state: 'visible', timeout: 12000 });
   } catch {
-    throw new Error(`"Find a table" button not found for rid=${rid} — the booking page may not have loaded.`);
+    throw new Error(`"Find a table" button not found for rid=${rid} date=${date} — the booking page may not have loaded.`);
   }
   await findTableButton.click();
 }
@@ -286,21 +292,28 @@ async function submitReservation(page, { partySize, restaurantId, sessionId }) {
   };
 }
 
-async function resolveBrowserSession(sessionId) {
-  if (!sessionId) {
+async function resolveBrowserSession(sessionId, callId) {
+  let resolvedSessionId = sessionId;
+  if (!resolvedSessionId && callId) {
+    resolvedSessionId = getSessionIdByCallId(callId);
+  }
+
+  if (!resolvedSessionId) {
     const created = await createBrowserSession();
     return { ...created, reused: false };
   }
 
-  const entry = acquireSession(sessionId);
+  const entry = acquireSession(resolvedSessionId);
   if (!entry) {
-    throw new Error(`Warm session not found or expired: ${sessionId}`);
+    throw new Error(
+      `Warm session not found or expired: ${sessionId || callId || resolvedSessionId}`,
+    );
   }
 
   return {
     browser: entry.browser,
     page: entry.page,
-    sessionId,
+    sessionId: resolvedSessionId,
     reused: true,
   };
 }
@@ -310,14 +323,22 @@ async function resolveBrowserSession(sessionId) {
 /**
  * Start a Browserbase session and warm OpenTable's homepage.
  * Use the returned sessionId on /availability and /reservations during a live call.
+ * Optionally pass callId (e.g. Vapi call.id) to associate the session with a phone call.
  */
-export async function warmSession() {
+export async function warmSession({ callId } = {}) {
+  if (callId) {
+    const existingSessionId = getSessionIdByCallId(callId);
+    if (existingSessionId) {
+      await releaseSession(existingSessionId);
+    }
+  }
+
   const { browser, page, sessionId } = await createBrowserSession();
   try {
     await warmHomepage(page);
-    putSession(sessionId, { browser, page });
-    logger.log('session_warmed', { sessionId });
-    return { success: true, sessionId };
+    putSession(sessionId, { browser, page, callId });
+    logger.log('session_warmed', { sessionId, callId });
+    return { success: true, sessionId, callId: callId || undefined };
   } catch (error) {
     await browser.close().catch(() => {});
     throw error;
@@ -330,15 +351,15 @@ export async function checkAvailability(params) {
     throw new Error(`Invalid availability input: ${errors.join('; ')}`);
   }
 
-  const { rid, date, time, partySize, sessionId: requestedSessionId } = data;
+  const { rid, date, time, partySize, sessionId: requestedSessionId, callId } = data;
   let session;
   let reused = false;
 
   try {
-    session = await resolveBrowserSession(requestedSessionId);
+    session = await resolveBrowserSession(requestedSessionId, callId);
     reused = session.reused;
     const { page, sessionId } = session;
-    logger.log('checking_availability', { rid, date, time, partySize, sessionId, reused });
+    logger.log('checking_availability', { rid, date, time, partySize, sessionId, callId, reused });
 
     await navigateAndFindTable(page, { rid, date, time, partySize }, { skipHomepageWarmup: reused });
     const slots12h = await waitForTimeSlots(page);
@@ -386,13 +407,15 @@ export async function makeReservation(params) {
     smsReminderOptIn,
     dryRun,
     sessionId: requestedSessionId,
+    callId,
   } = data;
 
   let session;
   let reused = false;
+  let preserveWarmSession = false;
 
   try {
-    session = await resolveBrowserSession(requestedSessionId);
+    session = await resolveBrowserSession(requestedSessionId, callId);
     reused = session.reused;
     const { page, sessionId } = session;
     attachDapiLogger(page, sessionId);
@@ -403,6 +426,7 @@ export async function makeReservation(params) {
       partySize,
       dryRun,
       sessionId,
+      callId,
       reused,
       email: logger.maskEmail(data.email),
       phone: logger.maskPhone(data.phone),
@@ -415,6 +439,7 @@ export async function makeReservation(params) {
 
     if (!availableTimes.includes(time)) {
       logger.log('requested_time_unavailable', { sessionId });
+      preserveWarmSession = reused;
       return {
         success: false,
         error: 'requested_time_unavailable',
@@ -437,6 +462,7 @@ export async function makeReservation(params) {
 
     if (dryRun) {
       logger.log('dry_run_stop_before_submit', { sessionId });
+      preserveWarmSession = reused;
       return {
         success: true,
         dryRun: true,
@@ -457,8 +483,12 @@ export async function makeReservation(params) {
     throw error;
   } finally {
     if (reused && session?.sessionId) {
-      // Always release warm sessions after a book attempt (success or failure).
-      await releaseSession(session.sessionId);
+      // Keep warm session after dry-run / unavailable so the caller can confirm quickly.
+      if (preserveWarmSession) {
+        unlockSession(session.sessionId);
+      } else {
+        await releaseSession(session.sessionId);
+      }
     } else if (session?.browser) {
       await session.browser.close().catch(() => {});
     }
